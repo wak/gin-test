@@ -3,14 +3,19 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+const maxUploadSize uint64 = 1 * 1024 * 1024
+var errTooLarge = errors.New("TooLarge")
 
 func handleUpload(c *gin.Context) {
 	start := time.Now()
@@ -32,6 +37,13 @@ func handleUpload(c *gin.Context) {
 			break
 		}
 	}
+
+	contentLength, err := strconv.ParseUint(c.Request.Header.Get("Content-Length"), 10, 64)
+	if err == nil && contentLength > maxUploadSize + 1024 {
+		c.String(http.StatusRequestEntityTooLarge, "File too large.")
+		return
+	}
+
 	// fmt.Printf("FileName = %s\n", part.FileName())
 	var totalBytes uint64
 	var sha256sum string
@@ -43,6 +55,9 @@ func handleUpload(c *gin.Context) {
 			nread, err := part.Read(buf)
 			if nread > 0 {
 				totalBytes += uint64(nread)
+				if totalBytes > maxUploadSize {
+					pipeWriter.CloseWithError(errTooLarge)
+				}
 				hasher.Write(buf[:nread])
 				pipeWriter.Write(buf[:nread])
 			}
@@ -66,10 +81,12 @@ func handleUpload(c *gin.Context) {
 				elapsed := float64(time.Now().Sub(start)) / float64(time.Second)
 				mBps := (float64(totalBytes) * 8 / 1024 / 1024) / float64(elapsed)
 				c.JSON(http.StatusOK, gin.H{"size": totalBytes, "sha256": sha256sum, "mbps": mBps})
-				return
+			} else if err == errTooLarge {
+				c.String(http.StatusRequestEntityTooLarge, "File too large.")
 			} else {
 				c.String(http.StatusBadRequest, "Upload failed.")
 			}
+			break
 		}
 	}
 }
